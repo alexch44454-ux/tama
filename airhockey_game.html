@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Аэрохоккей - Telegram Game</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            font-family: 'Arial', sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            color: white;
+            overflow: hidden;
+        }
+        
+        .game-container {
+            text-align: center;
+            width: 100%;
+            max-width: 500px;
+            padding: 10px;
+        }
+        
+        .score-board {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            font-size: 24px;
+            font-weight: bold;
+        }
+        
+        .player-score {
+            background: rgba(255, 255, 255, 0.2);
+            padding: 10px 20px;
+            border-radius: 10px;
+            backdrop-filter: blur(10px);
+        }
+        
+        .game-status {
+            margin: 10px 0;
+            font-size: 18px;
+            min-height: 25px;
+        }
+        
+        #gameCanvas {
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-radius: 15px;
+            background: #0a1929;
+            display: block;
+            margin: 0 auto;
+            touch-action: none;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+        }
+        
+        .controls {
+            margin-top: 15px;
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        
+        .btn {
+            background: rgba(255, 255, 255, 0.2);
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 10px;
+            padding: 10px 20px;
+            color: white;
+            font-size: 16px;
+            cursor: pointer;
+            backdrop-filter: blur(10px);
+            transition: all 0.3s;
+        }
+        
+        .btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(-2px);
+        }
+        
+        .btn:active {
+            transform: translateY(0);
+        }
+        
+        .waiting-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.9);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            flex-direction: column;
+        }
+        
+        .waiting-message {
+            font-size: 24px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top: 4px solid white;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .hidden {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+    <div class="waiting-overlay hidden" id="waitingOverlay">
+        <div class="waiting-message" id="waitingMessage">Ожидание соперника...</div>
+        <div class="spinner"></div>
+    </div>
+    
+    <div class="game-container">
+        <div class="score-board">
+            <div class="player-score">
+                <div>Вы</div>
+                <div id="player1Score">0</div>
+            </div>
+            <div class="player-score">
+                <div>Соперник</div>
+                <div id="player2Score">0</div>
+            </div>
+        </div>
+        
+        <div class="game-status" id="gameStatus">Готов к игре</div>
+        
+        <canvas id="gameCanvas" width="400" height="600"></canvas>
+        
+        <div class="controls">
+            <button class="btn" onclick="resetGame()">🔄 Новая игра</button>
+            <button class="btn" onclick="inviteFriend()">👥 Пригласить друга</button>
+        </div>
+    </div>
+
+    <script>
+        // Telegram WebApp API
+        const tg = window.Telegram?.WebApp;
+        if (tg) {
+            tg.ready();
+            tg.expand();
+        }
+        
+        // Получаем данные пользователя
+        let telegramUser = null;
+        let gameSessionId = null;
+        let isPlayer1 = true;
+        let isMultiplayer = false;
+        
+        if (tg?.initDataUnsafe?.user) {
+            telegramUser = tg.initDataUnsafe.user;
+        }
+        
+        // Параметры игры
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // Размеры стола
+        const tableWidth = canvas.width;
+        const tableHeight = canvas.height;
+        const goalWidth = 100;
+        const goalHeight = 20;
+        const goalY1 = 0; // Верхний гол
+        const goalY2 = tableHeight - goalHeight; // Нижний гол
+        const goalX = (tableWidth - goalWidth) / 2;
+        
+        // Игровые объекты
+        let puck = {
+            x: tableWidth / 2,
+            y: tableHeight / 2,
+            radius: 15,
+            vx: 0,
+            vy: 0,
+            speed: 0
+        };
+        
+        let player1 = {
+            x: tableWidth / 2,
+            y: tableHeight - 80,
+            radius: 25,
+            vx: 0,
+            vy: 0
+        };
+        
+        let player2 = {
+            x: tableWidth / 2,
+            y: 80,
+            radius: 25,
+            vx: 0,
+            vy: 0
+        };
+        
+        // Счет
+        let score1 = 0;
+        let score2 = 0;
+        const maxScore = 7;
+        
+        // Состояние игры
+        let gameRunning = false;
+        let lastUpdate = Date.now();
+        let syncInterval = null;
+        
+        // Обработка касаний/мыши
+        let touchPos = null;
+        
+        canvas.addEventListener('touchstart', handleTouch);
+        canvas.addEventListener('touchmove', handleTouch);
+        canvas.addEventListener('touchend', handleTouchEnd);
+        canvas.addEventListener('mousedown', handleMouse);
+        canvas.addEventListener('mousemove', handleMouse);
+        canvas.addEventListener('mouseup', handleMouseEnd);
+        
+        function handleTouch(e) {
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const touch = e.touches[0];
+            touchPos = {
+                x: touch.clientX - rect.left,
+                y: touch.clientY - rect.top
+            };
+            updatePlayerPosition(touchPos);
+        }
+        
+        function handleTouchEnd(e) {
+            e.preventDefault();
+            touchPos = null;
+        }
+        
+        function handleMouse(e) {
+            const rect = canvas.getBoundingClientRect();
+            touchPos = {
+                x: e.clientX - rect.left,
+                y: e.clientY - rect.top
+            };
+            updatePlayerPosition(touchPos);
+        }
+        
+        function handleMouseEnd(e) {
+            touchPos = null;
+        }
+        
+        function updatePlayerPosition(pos) {
+            if (!gameRunning) return;
+            
+            const player = isPlayer1 ? player1 : player2;
+            const targetX = Math.max(player.radius, Math.min(tableWidth - player.radius, pos.x));
+            const targetY = isPlayer1 
+                ? Math.max(tableHeight / 2, Math.min(tableHeight - player.radius, pos.y))
+                : Math.max(player.radius, Math.min(tableHeight / 2, pos.y));
+            
+            player.x = targetX;
+            player.y = targetY;
+            
+            // Отправляем позицию сопернику
+            if (isMultiplayer) {
+                sendGameState();
+            }
+        }
+        
+        // Физика
+        function updatePhysics() {
+            if (!gameRunning) return;
+            
+            const dt = 0.016; // ~60 FPS
+            
+            // Обновление позиции шайбы
+            puck.x += puck.vx * dt;
+            puck.y += puck.vy * dt;
+            
+            // Трение
+            puck.vx *= 0.98;
+            puck.vy *= 0.98;
+            
+            // Столкновение с бортами
+            if (puck.x - puck.radius <= 0 || puck.x + puck.radius >= tableWidth) {
+                puck.vx = -puck.vx * 0.8;
+                puck.x = Math.max(puck.radius, Math.min(tableWidth - puck.radius, puck.x));
+            }
+            
+            // Столкновение с верхним/нижним бортом (кроме ворот)
+            if (puck.y - puck.radius <= goalY1 + goalHeight && puck.x >= goalX && puck.x <= goalX + goalWidth) {
+                // В области ворот - пропускаем
+            } else if (puck.y - puck.radius <= 0) {
+                puck.vy = -puck.vy * 0.8;
+                puck.y = puck.radius;
+            }
+            
+            if (puck.y + puck.radius >= goalY2 && puck.x >= goalX && puck.x <= goalX + goalWidth) {
+                // В области ворот - пропускаем
+            } else if (puck.y + puck.radius >= tableHeight) {
+                puck.vy = -puck.vy * 0.8;
+                puck.y = tableHeight - puck.radius;
+            }
+            
+            // Голы
+            if (puck.y - puck.radius <= goalY1 + goalHeight && 
+                puck.x >= goalX && puck.x <= goalX + goalWidth) {
+                score2++;
+                resetPuck();
+                updateScore();
+                if (score2 >= maxScore) {
+                    endGame(false);
+                }
+            }
+            
+            if (puck.y + puck.radius >= goalY2 && 
+                puck.x >= goalX && puck.x <= goalX + goalWidth) {
+                score1++;
+                resetPuck();
+                updateScore();
+                if (score1 >= maxScore) {
+                    endGame(true);
+                }
+            }
+            
+            // Столкновение с игроками
+            checkCollision(puck, player1);
+            checkCollision(puck, player2);
+        }
+        
+        function checkCollision(puck, player) {
+            const dx = puck.x - player.x;
+            const dy = puck.y - player.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            const minDistance = puck.radius + player.radius;
+            
+            if (distance < minDistance) {
+                // Нормализация
+                const nx = dx / distance;
+                const ny = dy / distance;
+                
+                // Разделение
+                const overlap = minDistance - distance;
+                puck.x += nx * overlap * 0.5;
+                puck.y += ny * overlap * 0.5;
+                
+                // Отскок
+                const relativeVx = puck.vx - player.vx;
+                const relativeVy = puck.vy - player.vy;
+                const dot = relativeVx * nx + relativeVy * ny;
+                
+                if (dot < 0) {
+                    const bounce = 1.5;
+                    puck.vx -= dot * nx * bounce;
+                    puck.vy -= dot * ny * bounce;
+                }
+            }
+        }
+        
+        function resetPuck() {
+            puck.x = tableWidth / 2;
+            puck.y = tableHeight / 2;
+            puck.vx = (Math.random() - 0.5) * 200;
+            puck.vy = (Math.random() - 0.5) * 200;
+        }
+        
+        function resetGame() {
+            score1 = 0;
+            score2 = 0;
+            resetPuck();
+            player1.x = tableWidth / 2;
+            player1.y = tableHeight - 80;
+            player2.x = tableWidth / 2;
+            player2.y = 80;
+            gameRunning = true;
+            updateScore();
+            document.getElementById('gameStatus').textContent = 'Игра идет!';
+        }
+        
+        function updateScore() {
+            document.getElementById('player1Score').textContent = score1;
+            document.getElementById('player2Score').textContent = score2;
+        }
+        
+        function endGame(player1Won) {
+            gameRunning = false;
+            const message = player1Won 
+                ? (isPlayer1 ? '🎉 Вы выиграли!' : '😔 Вы проиграли')
+                : (isPlayer1 ? '😔 Вы проиграли' : '🎉 Вы выиграли!');
+            document.getElementById('gameStatus').textContent = message;
+            
+            // Отправляем результат в бот
+            if (isMultiplayer && gameSessionId && tg?.sendData) {
+                tg.sendData(JSON.stringify({
+                    action: 'game_finished',
+                    sessionId: gameSessionId,
+                    score1: score1,
+                    score2: score2
+                }));
+            }
+        }
+        
+        // Отрисовка
+        function draw() {
+            // Фон стола
+            ctx.fillStyle = '#0a1929';
+            ctx.fillRect(0, 0, tableWidth, tableHeight);
+            
+            // Центральная линия
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([10, 10]);
+            ctx.beginPath();
+            ctx.moveTo(0, tableHeight / 2);
+            ctx.lineTo(tableWidth, tableHeight / 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            
+            // Ворота
+            ctx.fillStyle = 'rgba(255, 0, 0, 0.3)';
+            ctx.fillRect(goalX, goalY1, goalWidth, goalHeight);
+            ctx.fillRect(goalX, goalY2, goalWidth, goalHeight);
+            
+            // Обводка ворот
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(goalX, goalY1, goalWidth, goalHeight);
+            ctx.strokeRect(goalX, goalY2, goalWidth, goalHeight);
+            
+            // Игрок 1 (нижний)
+            ctx.fillStyle = '#4CAF50';
+            ctx.beginPath();
+            ctx.arc(player1.x, player1.y, player1.radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            
+            // Игрок 2 (верхний)
+            ctx.fillStyle = '#2196F3';
+            ctx.beginPath();
+            ctx.arc(player2.x, player2.y, player2.radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            
+            // Шайба
+            ctx.fillStyle = 'white';
+            ctx.beginPath();
+            ctx.arc(puck.x, puck.y, puck.radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+        
+        // Игровой цикл
+        function gameLoop() {
+            updatePhysics();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+        
+        // Синхронизация с сервером (для мультиплеера)
+        function sendGameState() {
+            if (!isMultiplayer || !gameSessionId) return;
+            
+            const gameState = {
+                action: 'update_game_state',
+                sessionId: gameSessionId,
+                player: isPlayer1 ? 1 : 2,
+                playerX: isPlayer1 ? player1.x : player2.x,
+                playerY: isPlayer1 ? player1.y : player2.y,
+                puckX: puck.x,
+                puckY: puck.y,
+                puckVx: puck.vx,
+                puckVy: puck.vy,
+                score1: score1,
+                score2: score2
+            };
+            
+            if (tg?.sendData) {
+                tg.sendData(JSON.stringify(gameState));
+            }
+        }
+        
+        function receiveGameState(state) {
+            if (!isMultiplayer) return;
+            
+            // Обновляем позицию соперника
+            if (state.player === 1) {
+                player1.x = state.playerX;
+                player1.y = state.playerY;
+            } else {
+                player2.x = state.playerX;
+                player2.y = state.playerY;
+            }
+            
+            // Синхронизируем шайбу (авторитет сервера)
+            puck.x = state.puckX;
+            puck.y = state.puckY;
+            puck.vx = state.puckVx;
+            puck.vy = state.puckVy;
+            
+            score1 = state.score1;
+            score2 = state.score2;
+            updateScore();
+        }
+        
+        function inviteFriend() {
+            if (tg?.sendData) {
+                tg.sendData(JSON.stringify({
+                    action: 'invite_friend',
+                    userId: telegramUser?.id
+                }));
+            } else {
+                alert('Приглашение друга доступно только в Telegram');
+            }
+        }
+        
+        // Обработка данных от бота
+        function handleBotData(data) {
+            try {
+                const message = typeof data === 'string' ? JSON.parse(data) : data;
+                
+                if (message.action === 'game_state_update') {
+                    receiveGameState(message.state);
+                } else if (message.action === 'game_start') {
+                    gameSessionId = message.sessionId;
+                    isPlayer1 = message.isPlayer1;
+                    isMultiplayer = true;
+                    document.getElementById('waitingOverlay').classList.add('hidden');
+                    resetGame();
+                } else if (message.action === 'waiting_for_player') {
+                    document.getElementById('waitingMessage').textContent = 'Ожидание соперника...';
+                    document.getElementById('waitingOverlay').classList.remove('hidden');
+                }
+            } catch (e) {
+                console.error('Ошибка обработки данных:', e);
+            }
+        }
+        
+        // Инициализация
+        function init() {
+            // Проверяем параметры URL
+            const urlParams = new URLSearchParams(window.location.search);
+            const session = urlParams.get('session');
+            const player = urlParams.get('player');
+            
+            if (session && player) {
+                gameSessionId = session;
+                isPlayer1 = player === '1';
+                isMultiplayer = true;
+                document.getElementById('waitingOverlay').classList.add('hidden');
+            }
+            
+            // Запускаем игру
+            resetGame();
+            gameLoop();
+        }
+        
+        // Слушаем сообщения от бота
+        if (tg) {
+            tg.onEvent('viewportChanged', () => {
+                tg.expand();
+            });
+        }
+        
+        // Запуск
+        init();
+    </script>
+</body>
+</html>
+
